@@ -1,0 +1,9 @@
+# Visual Studio 缓存与编译文件
+.vs/
+bin/
+obj/
+*.suo
+*.user
+*.sdf
+*.opendb
+*.dbmdl
