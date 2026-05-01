@@ -1,0 +1,10 @@
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\bin\Debug\串口温湿度.exe.config
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\bin\Debug\串口温湿度.exe
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\bin\Debug\串口温湿度.pdb
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.csproj.AssemblyReference.cache
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.Form1.resources
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.Properties.Resources.resources
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.csproj.GenerateResource.cache
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.csproj.CoreCompileInputs.cache
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.exe
+D:\SmartFillMonitorPractice\串口温湿度\串口温湿度\obj\Debug\串口温湿度.pdb
