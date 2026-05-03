@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Drawing;
+using System.IO;
 using System.IO.Ports; // 串口通信核心命名空间，提供SerialPort类
 using System.Linq;
 using System.Text;
@@ -20,13 +21,6 @@ namespace 串口温湿度
         #region 全局变量定义（按功能分类，便于理解）
         // 串口核心对象：负责与硬件（如温湿度传感器）建立串口通信连接
         private SerialPort serialPort = new SerialPort();
-
-        // 全局接收缓冲区：解决串口"粘包/半包"问题，临时存储所有接收的字节数据
-        // 粘包：多个数据帧连在一起接收；半包：一个数据帧只接收了一部分
-        private byte[] _receiveBuffer = new byte[1024];
-
-        // 缓冲区索引：标记当前接收的数据存到了缓冲区的哪个位置（数据指针）
-        private int _bufferIndex = 0;
 
         // WinForm计时器：用于定时自动发送数据（运行在UI线程，可直接操作控件）
         private System.Windows.Forms.Timer sendTimer = new System.Windows.Forms.Timer();
@@ -111,8 +105,11 @@ namespace 串口温湿度
                     serialPort.StopBits = (StopBits)Enum.Parse(typeof(StopBits), comboBox_StopBits.SelectedItem.ToString()); // 停止位
                     serialPort.Encoding = Encoding.UTF8; // 字符编码（字符串与字节转换规则）
 
+                    serialPort.NewLine = "\n";
+
                     // 3. 打开串口（核心操作，失败会抛出异常）
                     serialPort.Open();
+                    serialPort.ReadTimeout = 500; // 500毫秒足够接收一行，避免无限阻塞
 
                     serialPort.DiscardInBuffer();  // 清空上电瞬间的噪音数据
                     serialPort.DiscardOutBuffer();
@@ -121,6 +118,7 @@ namespace 串口温湿度
                     // 等待NodeMCU启动 + DHT11初始化完成（保守2秒）
                     await Task.Delay(2000);
 
+                    serialPort.DiscardInBuffer();   // ★ 延时结束再清空一次，丢弃启动信息
 
                     // 4. 初始化串口连接状态
                     _isSerialConnected = true; // 标记连接成功
@@ -134,7 +132,6 @@ namespace 串口温湿度
                     // 6. UI反馈与首次发送
                     AppendLog($"成功打开串口：{serialPort.PortName}");
                     button_OpenSerial.Text = "关闭串口"; // 按钮文字切换
-                    SendData(textBox_Send.Text); // 打开串口后立即发送一次默认指令
                 }
             }
             catch (Exception ex)
@@ -268,180 +265,71 @@ namespace 串口温湿度
         // 串口数据接收事件：串口有数据传入时自动触发（运行在串口线程）
         private void DataReceivedHandler(object sender, SerialDataReceivedEventArgs e)
         {
-            // 转换为SerialPort对象，便于操作
             SerialPort sp = (SerialPort)sender;
-
             try
             {
-                // 1. 获取串口缓冲区中待读取的字节数
-                int bytesToRead = sp.BytesToRead;
-                if (bytesToRead <= 0) // 无数据则直接返回
+                while (sp.BytesToRead > 0)
                 {
-                    AppendLog("没有接收到数据");
-                    return;
+                    string line;
+                    try
+                    {
+                        line = sp.ReadLine();
+                    }
+                    catch (TimeoutException)
+                    {
+                        // 超时意味着暂时没有完整的行，退出循环等待下次事件
+                        break;
+                    }
+                    catch (IOException)
+                    {
+                        // 串口正在关闭，读取被中止，正常退出
+                        break;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+
+                    if (!line.Contains(".") || line.Contains("ERROR"))
+                        continue;
+
+                    ProcessCompleteLine(line);
                 }
-
-                // 2. 读取串口数据到临时缓冲区
-                byte[] buffer = new byte[bytesToRead];
-                int readLength = sp.Read(buffer, 0, bytesToRead); // 实际读取的字节数
-
-                // 3. 转换为字符串（便于初步判断数据类型）
-                string receivedStr = Encoding.UTF8.GetString(buffer, 0, readLength);
-
-                // 4. 过滤非数据帧（避免无效解析）
-                // 过滤条件：① 等于发送的指令 ② 不含小数点（非温湿度数据） ③ 包含ERROR（错误数据）
-                if (receivedStr == textBox_Send.Text || !receivedStr.Contains(".") || receivedStr.Contains("ERROR"))
-                {
-                    AppendLog($"「【接收 - 非数据帧】{receivedStr}」");
-                    return;
-                }
-
-                // 5. 有效数据帧：记录日志+调用粘包处理方法
-                AppendLog($"「【接收 - 原始数据】{receivedStr}」");
-                ProcessedRecievedData(buffer, readLength);
             }
             catch (Exception ex)
             {
-                // 捕获读取数据异常（如串口突然断开），避免程序崩溃
-                AppendLog($"接收数据失败：{ex.Message}");
+                AppendLog($"接收数据异常：{ex.Message}");
             }
         }
 
         // 粘包/半包处理方法：将零散数据拼接为完整的8字节帧
-        private void ProcessedRecievedData(byte[] data, int length)
+        private void ProcessCompleteLine(string line)
         {
-            //加锁的作用是保证线程安全
-            lock (_receiveBuffer)
-            {
-
-                //Array.Copy(源数组, 源起始索引, 目标数组, 目标起始索引, 复制长度);
-
-                //从哪拿，从哪开始拿；放到哪，从哪开始放；拿多少
-
-                //参数位置 参数名 含义 举例（结合你的代码）
-                //  1   sourceArray 从哪个数组拷贝数据   data（本次收到的字节数组）
-                //  2   sourceIndex 从源数组的第几个元素开始拷贝  length - _receiveBuffer.Length（只保留最后 1024 字节）
-                //  3   destinationArray 拷贝到哪个数组 _receiveBuffer（全局缓冲区）
-                //  4   destinationIndex 放到目标数组的第几个位置    0（从缓冲区开头放）
-                //  5   length 拷贝多少个元素 _receiveBuffer.Length（拷贝 1024 字节）
-                try
-                {
-                    // ===== 1. 边界保护：防止单次接收数据超过缓冲区总容量 =====
-                    if (length > _receiveBuffer.Length)
-                    {
-                        //“比如传来1028个，然后丢弃了前4个，保留了后1024个，把它们移到索引的开头。”
-                        // 截断保留最后 _receiveBuffer.Length 字节，避免越界
-                        Array.Copy(data, length - _receiveBuffer.Length, _receiveBuffer, 0, _receiveBuffer.Length);
-                        _bufferIndex = _receiveBuffer.Length;
-                    }
-                    else
-                    {
-                        // ===== 2. 累积溢出保护：若新数据会导致越界，清空缓冲区 =====
-                        if (_bufferIndex + length > _receiveBuffer.Length)
-                        {
-                            _bufferIndex = 0;
-                            AppendLog("缓冲区溢出，已清空");
-                        }
-
-                        // ===== 3. 将新数据追加到缓冲区 =====
-                        for (int i = 0; i < length; i++)
-                        {
-                            _receiveBuffer[_bufferIndex++] = data[i];
-                        }
-                    }
-
-                    // ===== 4. 帧同步与提取（解决粘包/半包） =====
-                    while (_bufferIndex >= 8)
-                    {
-                        byte firstByte = _receiveBuffer[0];
-
-                        // 帧头校验：首字节必须是数字 '0'~'9' 或负号 '-'（温湿度帧特征）
-                        bool isValidHeader = (firstByte >= 0x30 && firstByte <= 0x39) || firstByte == 0x2D;
-
-                        if (!isValidHeader)
-                        {
-                            // 无效帧头：丢弃首字节，数据整体左移一位，继续寻找有效帧头
-                            Array.Copy(_receiveBuffer, 1, _receiveBuffer, 0, _bufferIndex - 1);
-                            _bufferIndex--;
-                            continue;
-                        }
-
-                        // 提取一个完整帧（8字节），复制出来避免移位时影响解析
-                        byte[] frame = new byte[8];
-                        Array.Copy(_receiveBuffer, 0, frame, 0, 8);
-                        ProcessCompleteFrame(frame, 8);
-
-                        // 移除已处理的 8 字节，剩余数据前移
-                        int remainLength = _bufferIndex - 8;
-                        if (remainLength > 0)
-                        {
-                            Array.Copy(_receiveBuffer, 8, _receiveBuffer, 0, remainLength);
-                        }
-                        _bufferIndex = remainLength;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AppendLog($"处理接收数据失败：{ex.Message}");
-                    _bufferIndex = 0;   // 异常后重置缓冲区，避免状态错乱
-                }
-            }
-        }
-
-        // 解析8字节温湿度完整帧：转换为易读的温度/湿度格式
-        private void ProcessCompleteFrame(byte[] frame, int length)
-        {
-            // 1. 转换为16进制字符串（便于调试查看原始字节数据）
-            string hexStr = BitConverter.ToString(frame, 0, length).Replace("-", " ");
-
-            // 2. 转换为UTF8文本字符串（去除首尾空格）
-            string textStr = Encoding.UTF8.GetString(frame, 0, length).Trim();
-
-            // 3. 记录原始帧日志
-            AppendLog($"[完整帧] 16进制：{hexStr}");
-
-            // 4. 再次过滤非数据帧（双重校验，避免解析错误）
-            if (textStr == textBox_Send.Text || !textStr.Contains(".") || textStr.Contains("ERROR"))
-            {
-                AppendLog("非数据帧，跳过处理");
-                return;
-            }
-
             try
             {
-                // 5. 拆分温湿度数据（核心解析逻辑）
-                int dotIndex = textStr.IndexOf('.'); // 查找小数点位置（拆分温度/湿度的关键）
-                // 校验数据格式有效性：① 非空 ② 包含小数点 ③ 小数点后至少2位 ④ 总长度8位 ⑤ 无错误标识
-                if (!string.IsNullOrEmpty(textStr) && textStr.Contains(".") && dotIndex + 2 < textStr.Length && textStr.Length == 8 && !textStr.Contains("ERROR"))
-                {
-                    if (dotIndex > 0) // 小数点不在首位（避免无效数据）
-                    {
-                        // 拆分温度字符串（包含小数点后1位，如"25.5"）
-                        string TempStr = textStr.Substring(0, dotIndex + 2);
-                        // 拆分湿度字符串（小数点后2位，如"60"）
-                        string HumiStr = textStr.Substring(dotIndex + 2, 2);
+                // 按“|”分割温度和湿度两部分
+                string[] parts = line.Split('|');
+                if (parts.Length < 2) return;
 
-                        // 转换为数值类型（TryParse避免转换失败崩溃）
-                        if (float.TryParse(TempStr, out float Temp) && float.TryParse(HumiStr, out float Humi))
-                        {
-                            // 过滤合理的温湿度范围（工业常用：温度-20~60℃，湿度0~100%）
-                            if (Temp >= -20 && Temp <= 60 && Humi >= 0 && Humi <= 100)
-                            {
-                                AppendLog($"温度：{Temp} °C, 湿度：{Humi} %");
-                            }
-                            else
-                            {
-                                AppendLog("温度或湿度值超出合理范围");
-                            }
-                        }
-                        else
-                        {
-                            AppendLog("无法解析温度或湿度值（格式错误）");
-                        }
-                    }
-                    else
+                // 处理温度部分：“🌡 温度: 28.5 ℃”
+                string tempPart = parts[0];
+                int tempStart = tempPart.IndexOf(':'); // 找到冒号位置
+                if (tempStart == -1) return;
+                string tempStr = tempPart.Substring(tempStart + 1).Trim(); // 取冒号后面的内容
+                tempStr = tempStr.Replace("℃", "").Trim(); // 去掉 ℃ 符号
+
+                // 处理湿度部分：“  湿度: 69.0 %”
+                string humiPart = parts[1];
+                int humiStart = humiPart.IndexOf(':');
+                if (humiStart == -1) return;
+                string humiStr = humiPart.Substring(humiStart + 1).Trim();
+                humiStr = humiStr.Replace("%", "").Trim(); // 去掉 % 符号
+
+                if (float.TryParse(tempStr, out float temp) && float.TryParse(humiStr, out float humi))
+                {
+                    // 过滤明显错误的值
+                    if (temp > -20 && temp < 60 && humi >= 0 && humi <= 100)
                     {
-                        AppendLog("数据格式错误（小数点在首位）");
+                        AppendLog($"温度：{temp:F1} °C, 湿度：{humi:F1} %");
                     }
                 }
             }
@@ -449,10 +337,8 @@ namespace 串口温湿度
             {
                 AppendLog($"解析温湿度数据失败：{ex.Message}");
             }
-
-            // 记录解析后的文本帧日志
-            AppendLog($"[完整帧] 文本：{textStr}");
         }
+
         #endregion
 
         #region 初始化与辅助方法
@@ -461,18 +347,10 @@ namespace 串口温湿度
         {
             // 1. 初始化定时发送计时器
             sendTimer.Interval = 2000; // 定时间隔：2000ms=2秒
-            // 定时器触发事件：串口打开时自动发送文本框中的指令
-            sendTimer.Tick += (s, e) =>
-            {
-                if (serialPort.IsOpen)
-                {
-                    SendData(textBox_Send.Text);
-                }
-            };
 
             // 2. 填充串口下拉框（自动检测电脑可用串口）
             string[] ports = SerialPort.GetPortNames();
-            textBox_Send.Text = "GetData"; // 默认发送指令
+            textBox_Send.Text = ""; // 默认发送指令
             foreach (string port in ports)
             {
                 comboBox_SerialPort.Items.Add(port);
@@ -562,7 +440,6 @@ namespace 串口温湿度
                     // 转换字符串为字节数组（串口底层传输的是字节，而非字符串）
                     byte[] sendBytes = Encoding.UTF8.GetBytes(fixed8ByteData);
                     serialPort.Write(sendBytes, 0, sendBytes.Length);
-                    AppendLog($"【发送指令】{text}");
                 }
                 else
                 {
