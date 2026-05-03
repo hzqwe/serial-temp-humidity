@@ -44,8 +44,8 @@
             this.textBox_Send = new System.Windows.Forms.TextBox();
             this.groupBox2 = new System.Windows.Forms.GroupBox();
             this.button_SendData = new System.Windows.Forms.Button();
-            this.textBox_Receive = new System.Windows.Forms.TextBox();
             this.groupBox3 = new System.Windows.Forms.GroupBox();
+            this.RichTextBox_Received = new System.Windows.Forms.RichTextBox();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
             this.groupBox2.SuspendLayout();
             this.groupBox3.SuspendLayout();
@@ -197,24 +197,26 @@
             this.button_SendData.UseVisualStyleBackColor = true;
             this.button_SendData.Click += new System.EventHandler(this.button_SendData_Click);
             // 
-            // textBox_Receive
-            // 
-            this.textBox_Receive.Location = new System.Drawing.Point(33, 27);
-            this.textBox_Receive.Multiline = true;
-            this.textBox_Receive.Name = "textBox_Receive";
-            this.textBox_Receive.Size = new System.Drawing.Size(592, 301);
-            this.textBox_Receive.TabIndex = 2;
-            // 
             // groupBox3
             // 
+            this.groupBox3.Controls.Add(this.RichTextBox_Received);
             this.groupBox3.Controls.Add(this.button_SendData);
-            this.groupBox3.Controls.Add(this.textBox_Receive);
             this.groupBox3.Location = new System.Drawing.Point(662, 462);
             this.groupBox3.Name = "groupBox3";
             this.groupBox3.Size = new System.Drawing.Size(683, 420);
             this.groupBox3.TabIndex = 11;
             this.groupBox3.TabStop = false;
             this.groupBox3.Text = "接收数据";
+            // 
+            // RichTextBox_Received
+            // 
+            this.RichTextBox_Received.Location = new System.Drawing.Point(33, 42);
+            this.RichTextBox_Received.Name = "RichTextBox_Received";
+            this.RichTextBox_Received.ReadOnly = true;
+            this.RichTextBox_Received.ScrollBars = System.Windows.Forms.RichTextBoxScrollBars.Vertical;
+            this.RichTextBox_Received.Size = new System.Drawing.Size(592, 283);
+            this.RichTextBox_Received.TabIndex = 12;
+            this.RichTextBox_Received.Text = "";
             // 
             // groupBox1
             // 
@@ -233,7 +235,7 @@
             this.groupBox1.Controls.Add(this.label1);
             this.groupBox1.Location = new System.Drawing.Point(40, 36);
             this.groupBox1.Name = "groupBox1";
-            this.groupBox1.Size = new System.Drawing.Size(539, 779);
+            this.groupBox1.Size = new System.Drawing.Size(548, 846);
             this.groupBox1.TabIndex = 9;
             this.groupBox1.TabStop = false;
             this.groupBox1.Text = "串口设置";
@@ -251,7 +253,6 @@
             this.groupBox2.ResumeLayout(false);
             this.groupBox2.PerformLayout();
             this.groupBox3.ResumeLayout(false);
-            this.groupBox3.PerformLayout();
             this.groupBox1.ResumeLayout(false);
             this.groupBox1.PerformLayout();
             this.ResumeLayout(false);
@@ -276,9 +277,9 @@
         private System.Windows.Forms.TextBox textBox_Send;
         private System.Windows.Forms.GroupBox groupBox2;
         private System.Windows.Forms.Button button_SendData;
-        private System.Windows.Forms.TextBox textBox_Receive;
         private System.Windows.Forms.GroupBox groupBox3;
         private System.Windows.Forms.GroupBox groupBox1;
+        private System.Windows.Forms.RichTextBox RichTextBox_Received;
     }
 }
 

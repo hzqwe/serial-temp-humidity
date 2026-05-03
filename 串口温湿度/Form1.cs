@@ -31,21 +31,6 @@ namespace 串口温湿度
         // WinForm计时器：用于定时自动发送数据（运行在UI线程，可直接操作控件）
         private System.Windows.Forms.Timer sendTimer = new System.Windows.Forms.Timer();
 
-        // 超时重发计时器：用于检测"发送数据后无响应"，触发自动重发（后台线程计时器）
-        private System.Timers.Timer _timeoutTimer;
-
-        // 重发次数计数器：记录当前数据已重发的次数，防止无限重发
-        private int _retryCount = 0;
-
-        // 最大重发次数常量：限制重发次数（工业常用3次，避免无效重试）
-        private const int MaxRetryCount = 3;
-
-        // 缓存最后一次发送的字节数据：超时重发时复用该数据，无需重新拼接
-        private byte[] _lastSentData;
-
-        // 超时时间常量：发送数据后等待响应的时间（500ms），超时则触发重发
-        private const int TimeoutMs = 500;
-
         // 断线重连计时器：串口报错后，定时尝试重新连接（后台线程计时器）
         private System.Timers.Timer _reconnectTimer;
 
@@ -75,7 +60,7 @@ namespace 串口温湿度
 
         #region 串口开关核心逻辑（按钮点击事件）
         // 打开/关闭串口按钮点击事件：一个按钮实现两种功能，逻辑分离更可靠
-        private void button_OpenSerial_Click(object sender, EventArgs e)
+        private async void button_OpenSerial_Click(object sender, EventArgs e)
         {
             try
             {
@@ -129,6 +114,14 @@ namespace 串口温湿度
                     // 3. 打开串口（核心操作，失败会抛出异常）
                     serialPort.Open();
 
+                    serialPort.DiscardInBuffer();  // 清空上电瞬间的噪音数据
+                    serialPort.DiscardOutBuffer();
+
+                    AppendLog("串口已打开，等待传感器初始化...");
+                    // 等待NodeMCU启动 + DHT11初始化完成（保守2秒）
+                    await Task.Delay(2000);
+
+
                     // 4. 初始化串口连接状态
                     _isSerialConnected = true; // 标记连接成功
                     _currentReconnectCount = 0; // 重置重连次数
@@ -152,64 +145,6 @@ namespace 串口温湿度
         }
         #endregion
 
-        #region 超时重发核心逻辑
-        // 带超时重发的发送方法：发送数据+启动超时计时器，超时自动重发
-        // 参数：要发送的字节数组（串口底层以字节传输，而非字符串）
-        public void SendDataWithTimeout(byte[] data)
-        {
-            // 1. 校验是否达到最大重发次数，达到则停止重发
-            if (_retryCount >= MaxRetryCount)
-            {
-                AppendLog($"【超时重发】达到最大重发次数（{MaxRetryCount}次），停止发送");
-                return;
-            }
-
-            // 2. 缓存本次发送的数据（用于超时后重发）
-            _lastSentData = data.Clone() as byte[];
-
-            // 3. 核心操作：通过串口发送字节数据
-            serialPort.Write(data, 0, data.Length);
-
-            // 4. 释放旧的超时计时器（关键：避免多个计时器同时运行）
-            _timeoutTimer?.Stop();    // 停止计时器
-            _timeoutTimer?.Dispose(); // 释放计时器资源
-
-            // 5. 初始化新的超时计时器
-            _timeoutTimer = new System.Timers.Timer(TimeoutMs); // 设置超时时间
-            _timeoutTimer.Elapsed += OnTimeoutElapsed; // 绑定超时触发事件
-            _timeoutTimer.AutoReset = false; // 仅触发一次（避免重复重发）
-            _timeoutTimer.Start(); // 启动计时器
-
-            // 6. 日志记录：便于调试查看发送次数和内容
-            AppendLog($"【发送指令】第{_retryCount + 1}次发送：{Encoding.UTF8.GetString(data)}");
-        }
-
-        // 超时计时器触发事件：发送数据后超时无响应，执行重发逻辑
-        private void OnTimeoutElapsed(object sender, ElapsedEventArgs e)
-        {
-            // 前置校验：串口未打开则直接返回（避免空操作）
-            if (!serialPort.IsOpen) return;
-
-            // 跨线程操作UI：System.Timers.Timer运行在后台线程，需Invoke切换到UI线程
-            this.Invoke(new Action(() =>
-            {
-                // 二次校验：防止Invoke过程中串口被关闭
-                if (!serialPort.IsOpen) return;
-
-                // 1. 日志记录超时信息
-                AppendLog($"【超时重发】通信超时（{TimeoutMs}ms），第{_retryCount + 1}次重发");
-
-                // 2. 重发次数+1
-                _retryCount++;
-
-                // 3. 校验缓存数据是否存在，存在则调用重发方法
-                if (_lastSentData != null)
-                {
-                    SendDataWithTimeout(_lastSentData);
-                }
-            }));
-        }
-        #endregion
 
         #region 串口关闭与资源释放
         // 封装的串口关闭方法：彻底释放所有资源，避免内存泄漏/线程残留
@@ -220,15 +155,6 @@ namespace 串口温湿度
 
             // 1. 停止所有计时器（核心：避免计时器后台运行）
             sendTimer.Stop(); // 停止定时发送计时器
-
-            // 2. 销毁超时重发计时器（完整释放流程）
-            if (_timeoutTimer != null)
-            {
-                _timeoutTimer.Elapsed -= OnTimeoutElapsed; // 移除事件绑定（关键）
-                _timeoutTimer.Stop();
-                _timeoutTimer.Dispose();
-                _timeoutTimer = null; // 置空引用，便于GC回收
-            }
 
             // 3. 销毁断线重连计时器（完整释放流程）
             if (_reconnectTimer != null)
@@ -258,9 +184,7 @@ namespace 串口温湿度
 
             // 6. 重置所有状态变量（避免下次打开串口时状态混乱）
             _isSerialConnected = false;    // 标记连接断开
-            _retryCount = 0;               // 重置重发次数
             _currentReconnectCount = 0;    // 重置重连次数
-            _lastSentData = null;          // 清空缓存的发送数据
 
             // 7. UI反馈
             AppendLog("串口已关闭（所有任务已停止）");
@@ -349,10 +273,6 @@ namespace 串口温湿度
 
             try
             {
-                // 关键：收到数据立即停止超时计时器，重置重发次数（表示通信正常）
-                _timeoutTimer?.Stop();
-                _retryCount = 0;
-
                 // 1. 获取串口缓冲区中待读取的字节数
                 int bytesToRead = sp.BytesToRead;
                 if (bytesToRead <= 0) // 无数据则直接返回
@@ -641,8 +561,8 @@ namespace 串口温湿度
                 {
                     // 转换字符串为字节数组（串口底层传输的是字节，而非字符串）
                     byte[] sendBytes = Encoding.UTF8.GetBytes(fixed8ByteData);
-                    // 调用带超时重发的发送方法
-                    SendDataWithTimeout(sendBytes);
+                    serialPort.Write(sendBytes, 0, sendBytes.Length);
+                    AppendLog($"【发送指令】{text}");
                 }
                 else
                 {
@@ -660,16 +580,23 @@ namespace 串口温湿度
         private void AppendLog(string data)
         {
             // InvokeRequired：判断当前线程是否为UI线程
-            if (textBox_Receive.InvokeRequired)
+            if (RichTextBox_Received.InvokeRequired)
             {
                 // 非UI线程：委托UI线程执行AppendLog方法
-                textBox_Receive.Invoke(new Action<string>(AppendLog), data);
+                RichTextBox_Received.BeginInvoke(new Action<string>(AppendLog), data);
+                return;
             }
-            else
+
+            // 判断用户当前是否在查看末尾
+            bool isAtEnd = RichTextBox_Received.GetPositionFromCharIndex(RichTextBox_Received.TextLength).Y
+                           < RichTextBox_Received.ClientSize.Height + 10;
+
+            RichTextBox_Received.AppendText($"{data}{Environment.NewLine}");
+
+            // 只有在用户没有手动翻看历史日志时，才跟随滚动
+            if (isAtEnd)
             {
-                // UI线程：直接更新文本框，追加日志并自动滚动到最新行
-                textBox_Receive.AppendText($"{data}{Environment.NewLine}");
-                textBox_Receive.ScrollToCaret();
+                RichTextBox_Received.ScrollToCaret();
             }
         }
 
@@ -693,8 +620,6 @@ namespace 串口温湿度
             }
 
             // 2. 释放所有计时器资源
-            _timeoutTimer?.Stop();
-            _timeoutTimer?.Dispose();
             _reconnectTimer?.Stop();
             _reconnectTimer?.Dispose();
             sendTimer.Dispose();
